@@ -72,7 +72,7 @@ class Conv2D:
                         res[n_, y,x,c_out] = np.sum(snip * kernel[:,:,:,c_out])
         return res + self.bias
 
-class Max_Pool2D:
+class MaxPool2D:
     def __init__(self, stride):
         self.stride = stride
     
