@@ -1,4 +1,4 @@
-import np as np
+import numpy as np
 
 def conv2d(img, kernel):
     """
