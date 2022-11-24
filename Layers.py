@@ -121,6 +121,5 @@ class Model:
     
     def __call__(self, x):
         for l in self.layers:
-            print(l)
             x = l(x)
         return x
