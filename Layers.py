@@ -80,10 +80,11 @@ class MaxPool2D:
     
     def __call__(self, img):
         n, h, w, c = img.shape
-        k = self.stride
-        res = np.empty(n, h//k , w//k, c)
+        h_k, w_k = self.stride
+        res = np.empty((n, h//h_k , w//w_k, c))
         for n_ in range(n):
-            res[n_] = pooling(img[n_], (k, k))
+            res[n_] = pooling(img[n_], (h_k, w_k))
+        return res
 
 class Flatten:
     def __call__(self, img):
@@ -120,5 +121,6 @@ class Model:
     
     def __call__(self, x):
         for l in self.layers:
+            print(l)
             x = l(x)
         return x
