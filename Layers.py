@@ -74,6 +74,8 @@ class Conv2D:
 
 class MaxPool2D:
     def __init__(self, stride):
+        if isinstance(stride, int):
+            stride = (stride, stride)
         self.stride = stride
     
     def __call__(self, img):
