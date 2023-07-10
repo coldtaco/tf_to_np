@@ -52,18 +52,19 @@ def pooling(mat,ksize,method='max',pad=False, lrp = False):
 
         # Calculates which index max pooling got the value from
         # Only works with non overlapping kernels
-        if lrp == True:
+        if lrp:
             c = mat.shape[2]
             lrp_source = np.zeros_like(mat, dtype = bool) # Boolean mask
 
+            # (ny, ky, nx, c)
             x_argmax = np.nanargmax(mat_pad.reshape(new_shape),axis=(3))
 
             # Arrange index selectors with offsets
             y_vals = np.arange(kx)
-            y_vals = np.tile(np.arange(kx), kx*c)
+            y_vals = np.tile(np.arange(kx), nx*ny*c)
             y_offset = np.tile(np.tile(np.repeat(np.arange(nx), kx) * kx, ny), c)
             x_offset = np.tile(np.repeat(np.repeat(np.arange(nx), kx) * kx, ny), c)
-            c_vals = np.repeat(np.arange(c), kx*ky)
+            c_vals = np.repeat(np.arange(c), kx*nx*ny)
 
             # Shuffle index so index values go from column wise kernels, then rows, then channels
             x_vals = np.moveaxis(x_argmax, [0,1,2,3], (2, 3, 1, 0)).flatten()
@@ -72,20 +73,20 @@ def pooling(mat,ksize,method='max',pad=False, lrp = False):
             y_ind = y_vals + y_offset
             
             # Get max in each kernel
-            best_in_kernel = mat[y_ind, x_ind, c_vals].reshape(4, -1, order = 'F').argmax(0)
+            best_in_kernel = mat[y_ind, x_ind, c_vals].reshape(ky, -1, order = 'F').argmax(0)
 
             # Retrieve max index for each kernel pass
-            final_x = x_ind.reshape(4, -1, order = 'F')[best_in_kernel, np.arange(nx*ny*c)]
-            final_y = y_ind.reshape(4, -1, order = 'F')[best_in_kernel, np.arange(nx*ny*c)]
+            final_x = x_ind.reshape(ky, -1, order = 'F')[best_in_kernel, np.arange(nx*ny*c)]
+            final_y = y_ind.reshape(ky, -1, order = 'F')[best_in_kernel, np.arange(nx*ny*c)]
 
             # Set result
             lrp_source[final_y, final_x, np.repeat(np.arange(c), nx*ny)] = True
             
-            return result, np.nanargmax(mat_pad.reshape(new_shape),axis=(3)), lrp_source
+            return result, lrp_source
     else:
         result=np.nanmean(mat_pad.reshape(new_shape),axis=(1,3))
 
-    return result, np.nanargmax(mat_pad.reshape(new_shape),axis=(3))
+    return result
 
 class Conv2D:
     def __init__(self, kernel, bias, input_shape, lrp_on = False):
@@ -106,15 +107,59 @@ class Conv2D:
         self.kernel = kernel.reshape(k1*k2*c_in, c_out)
         self.output_shape = (-1, h-k1+1, w-k2+1, c_out)
 
-    def __call__(self, img):
+    def __call__(self, img:np.ndarray, lrp = False):
         img = img.reshape(-1) # Flatten for indexing
         img = img[self.img_inds]
+        if lrp:
+            # (n*h*w, k1*k2*c)
+            self.last_call = img
+        # (n * h-k1+1 * w-k2+1, k1*k2*c_in, c_out)
         img = img @ self.kernel
+
+
         img = img.reshape(*self.output_shape)
+
         return img + self.bias
 
-    def lrp(self, a):
-        return a * self.last_call
+    def lrp_backward(self, relevance:np.ndarray):
+        n = relevance.shape[0]
+        # TODO change so kernel size is not hard coded
+        input_shape = (n, self.output_shape[1] + 4, self.output_shape[2] + 4, self.kernel.shape[0]//25)
+        output_shape = [n] + list(self.output_shape)[1:]
+        lrp_score = np.zeros(input_shape)
+
+        n_pixels = 1
+        for x in input_shape[1:]:
+            n_pixels *= x
+
+        result = np.zeros((n, n_pixels))
+        print(input_shape, result.shape, relevance.shape)
+
+        relevance = relevance.reshape(n, -1)
+
+        counter = 0
+        # Each image in batch
+        for n_i in range(n):
+            # Each pixel in output image
+            for p in range(output_shape[1] * output_shape[2]):
+                # Each channel in output image
+                for c_out in range(output_shape[-1]):
+                    a = self.last_call[counter] # Image already sliced for per pixel output
+                    w = self.kernel[:,c_out] # Kernel stack for specific pixel in output
+                    aw = a * w
+                    aw /= aw.sum()
+
+                    source_ind = self.img_inds[p] # Which pixels used in source image
+
+                    rel = relevance[n_i, p * output_shape[-1] + c_out] # Get relevance of specific pixel
+
+                    result[n_i, source_ind] += aw * rel
+
+        return result
+
+    
+    def lrp_forward(self, img:np.ndarray):
+        return self(img, lrp = True)
 
     def clear(self):
         self.last_call = None
@@ -126,16 +171,36 @@ class MaxPool2D:
         self.stride = stride
         self.lrp_on = lrp_on
     
-    def __call__(self, img):
+    def __call__(self, img:np.ndarray, lrp = False):
         n, h, w, c = img.shape
         h_k, w_k = self.stride
         res = np.empty((n, h//h_k , w//w_k, c))
+
+        if lrp: lrp_source = np.empty(img.shape)
+
         for n_ in range(n):
-            res[n_] = pooling(img[n_], (h_k, w_k))
+            r = pooling(img[n_], (h_k, w_k), lrp=lrp)
+            if lrp:
+                r, l = r
+
+            res[n_] = r
+
+            if lrp: lrp_source[n_] = l
+
+        if lrp: return res, lrp_source
+
         return res
 
-    def lrp(self, a):
-        return a * self.last_call
+    def lrp_backward(self, relevance:np.ndarray):
+        res = np.zeros_like(self.last_call)
+        w = np.where(self.last_call)
+        print(relevance.shape, self.last_call.shape)
+        res[w[0], w[1], w[2], w[3]] = relevance.reshape(-1)
+        return res
+    
+    def lrp_forward(self, img:np.ndarray):
+        res, self.last_call = self(img, lrp = True)
+        return res
 
     def clear(self):
         self.last_call = None
@@ -144,9 +209,19 @@ class Flatten:
     def __init__(self, lrp_on = False):
         self.lrp_on = lrp_on
 
-    def __call__(self, img):
+    def __call__(self, img:np.ndarray):
         n, h, w, c = img.shape
         return img.reshape(n, -1)
+
+    def lrp_backward(self, relevance:np.ndarray):
+        return relevance.reshape(self.last_call)
+    
+    def lrp_forward(self, img:np.ndarray):
+        self.last_call = img.shape
+        return self(img)
+
+    def clear(self):
+        self.last_call = None
 
 class Dense:
     def __init__(self, weight, bias, lrp_on = False):
@@ -154,17 +229,22 @@ class Dense:
         self.bias = bias
         self.lrp_on = lrp_on
 
-    def __call__(self, img):
+    def __call__(self, img:np.ndarray):
         return (img @ self.weight) + self.bias
+    
+    def lrp_backward(self, relevance:np.ndarray):
+        score = self.last_call.swapaxes(0,1)*self.weight # (n, u_in, u_out)
+        score /= score.sum(0, keepdims=True) # Normalise per weight
+        score *= relevance
+        score = score.sum(1) # (n, u_in) -> relevance per weight for layer above
+        return score
 
-    def lrp(self, a):
-        return a * self.last_call
+    def lrp_forward(self, img:np.ndarray):
+        self.last_call = img
+        return self(img)
 
     def clear(self):
-        """
-            No need for implementation for linear unit
-        """
-        pass
+        self.last_call = None
 
 class Softmax:
     def __init__(self, axis = -1, lrp_on = False):
@@ -172,7 +252,7 @@ class Softmax:
         self.lrp_on = lrp_on
         self.last_call = None
 
-    def __call__(self, x):
+    def __call__(self, x:np.ndarray):
         axis = self.axis
 
         x = x - x.max(axis=axis, keepdims=True)
@@ -182,8 +262,11 @@ class Softmax:
 
         return y
     
-    def lrp(self, a):
-        return a * self.last_call
+    def lrp_backward(self, relevance):
+        return relevance
+    
+    def lrp_forward(self, img:np.ndarray):
+        return self(img)
 
     def clear(self):
         self.last_call = None
@@ -197,8 +280,11 @@ class ReLU:
         x[x<0] = 0
         return x
 
-    def lrp(self, a):
-        return a * self.last_call
+    def lrp_backward(self, relevance:np.ndarray):
+        return relevance
+    
+    def lrp_forward(self, img:np.ndarray):
+        return self(img)
 
     def clear(self):
         self.last_call = None
@@ -215,19 +301,22 @@ class Model:
     def clear(self):
         for l in self.layers:
             l.clear()
-
-    def lrp_on(self):
-        for l in self.layers:
-            l.lrp_on = True
-
-    def lrp_off(self):
-        for l in self.layers:
-            l.lrp_on = False
     
-    def lrp(self):
+    def lrp_backward(self):
         a = self.layers[-1].a
 
         for l in self.layers[:-1:-1]:
-            a = l.lrp(a)
+            a = l.lrp_backward(a)
         
         return a
+
+    def lrp(self, x):
+        for l in self.layers:
+            x = l.lrp_forward(x)
+        res = x
+
+        lrp = x[0]
+        for l in self.layers[::-1]:
+            lrp = l.lrp_backward(lrp)
+        
+        return lrp
