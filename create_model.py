@@ -9,7 +9,7 @@ def create_model(tf_model_path, save_path='model'):
     save_path:(str) Pickle save destination
     """
     l = []
-    model = tf.keras.models.load_model('model_casia_run1.h5')
+    model = tf.keras.models.load_model(tf_model_path)
     for a in model.layers:
         if 'conv2d' in a.name:
             l.append(Conv2D(*[w.numpy() for w in a.weights], a._build_input_shape))
