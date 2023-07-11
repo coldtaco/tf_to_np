@@ -110,18 +110,17 @@ class Conv2D:
     def __call__(self, img:np.ndarray, lrp = False):
         img = img.reshape(-1) # Flatten for indexing
         img = img[self.img_inds]
-        if lrp:
-            # (n*h*w, k1*k2*c)
-            self.last_call = img
         # (n * h-k1+1 * w-k2+1, k1*k2*c_in, c_out)
         img = img @ self.kernel
 
 
         img = img.reshape(*self.output_shape)
+        img = img + self.bias
 
-        return img + self.bias
+        
+        return img
 
-    def lrp_backward(self, relevance:np.ndarray):
+    def lrp_backward_old(self, relevance:np.ndarray):
         n = relevance.shape[0]
         # TODO change so kernel size is not hard coded
         input_shape = (n, self.output_shape[1] + 4, self.output_shape[2] + 4, self.kernel.shape[0]//25)
@@ -155,10 +154,50 @@ class Conv2D:
 
                     result[n_i, source_ind] += aw * rel
 
-        return result
+        return result.reshape(input_shape)
 
+    def lrp_backward(self, relevance:np.ndarray):
+        n = relevance.shape[0]
+        # TODO change so kernel size is not hard coded
+        input_shape = (n, self.output_shape[1] + 4, self.output_shape[2] + 4, self.kernel.shape[0]//25)
+
+        a = self.last_call
+        z = self(a) + 1e-9# Denominator
+        s = relevance/z
+
+        # relevance -> output shape
+        # weights -> weights per output pixel
+        print(s.shape)
+        print(self.kernel.shape)
+
+        input_size = 1
+
+        for x in input_shape[1:]:
+            input_size *= x
+
+        res = np.zeros((n, input_size))
+
+        # relevance = relevance.reshape(n, -1, self.kernel.shape[1])
+
+        # grad = relevance.dot(self.kernel.T)
+
+
+        s = s.reshape(n, -1, self.kernel.shape[1])
+        z = z.reshape(n, -1, self.kernel.shape[1])
+
+        grad = (z*s).dot(self.kernel.T)
+        # grad = grad.reshape(n, -1)
+
+        for n_i in range(n):
+            res[n_i][self.img_inds] += grad[n_i]
+        
+        res = res.reshape(a.shape)
+
+        return a*res
+        
     
     def lrp_forward(self, img:np.ndarray):
+        self.last_call = img
         return self(img, lrp = True)
 
     def clear(self):
@@ -192,10 +231,23 @@ class MaxPool2D:
         return res
 
     def lrp_backward(self, relevance:np.ndarray):
+        mode = 'avg'
         res = np.zeros_like(self.last_call)
-        w = np.where(self.last_call)
-        print(relevance.shape, self.last_call.shape)
-        res[w[0], w[1], w[2], w[3]] = relevance.reshape(-1)
+        if mode == 'winner_takes_all':
+            w = np.where(self.last_call)
+            res[w[0], w[1], w[2], w[3]] = relevance.reshape(-1)
+        elif 'avg':
+            n,h,w,c = self.last_call.shape
+            y_s, x_s = self.stride
+            y_inds = np.repeat(np.arange(w//x_s), h//y_s) * y_s
+            x_inds = np.tile(np.arange(h//y_s), w//x_s) * x_s
+            for n_ind in range(n):
+                for x_stride in range(self.stride[1]):
+                    for y_stride in range(self.stride[0]):
+                        x = x_inds + x_stride
+                        y = y_inds + y_stride
+                        res[n_ind, y, x] = relevance.reshape(-1, c)
+
         return res
     
     def lrp_forward(self, img:np.ndarray):
@@ -232,12 +284,25 @@ class Dense:
     def __call__(self, img:np.ndarray):
         return (img @ self.weight) + self.bias
     
+    # def lrp_backward_old(self, relevance:np.ndarray):
+    #     score = self.last_call.swapaxes(0,1)*self.weight # (n, u_in, u_out)
+    #     score /= score.sum(0, keepdims=True) # Normalise per weight
+    #     score *= relevance
+    #     score = score.sum(1) # (n, u_in) -> relevance per weight for layer above
+    #     return score
+    
     def lrp_backward(self, relevance:np.ndarray):
-        score = self.last_call.swapaxes(0,1)*self.weight # (n, u_in, u_out)
-        score /= score.sum(0, keepdims=True) # Normalise per weight
-        score *= relevance
-        score = score.sum(1) # (n, u_in) -> relevance per weight for layer above
-        return score
+        """
+            Taken from https://git.tu-berlin.de/gmontavon/lrp-tutorial/-/tree/main
+            Approximately 5 times faster than other implementation
+        """
+        a, w, r = self.last_call, self.weight, relevance
+        z = a.dot(w) + self.bias + 1e-9   # step 1
+        s = r / z               # step 2
+        c = s.dot(w.T)               # step 3
+        x = a*c
+        return x
+
 
     def lrp_forward(self, img:np.ndarray):
         self.last_call = img
@@ -315,8 +380,10 @@ class Model:
             x = l.lrp_forward(x)
         res = x
 
-        lrp = x[0]
-        for l in self.layers[::-1]:
+        res[0][1] = 0
+
+        lrp = np.array([[1,0]])
+        for l in self.layers[1:][::-1]:
             lrp = l.lrp_backward(lrp)
         
         return lrp
