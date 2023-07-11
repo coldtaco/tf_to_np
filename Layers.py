@@ -388,4 +388,4 @@ class Model:
         for l in self.layers[1:][::-1]:
             lrp = l.lrp_backward(lrp)
         
-        return lrp
+        return res[0][0], lrp
