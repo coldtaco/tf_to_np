@@ -106,6 +106,7 @@ class Conv2D:
         self.img_inds = np.asarray(snips).reshape(-1, k1 * k2* c_in)
         self.kernel = kernel.reshape(k1*k2*c_in, c_out)
         self.output_shape = (-1, h-k1+1, w-k2+1, c_out)
+        self.input_shape = (-1, h, w, c)
 
     def __call__(self, img:np.ndarray, lrp = False):
         img = img.reshape(-1) # Flatten for indexing
@@ -158,8 +159,9 @@ class Conv2D:
 
     def lrp_backward(self, relevance:np.ndarray):
         n = relevance.shape[0]
-        # TODO change so kernel size is not hard coded
-        input_shape = (n, self.output_shape[1] + 4, self.output_shape[2] + 4, self.kernel.shape[0]//25)
+        input_shape = list(self.input_shape)
+        input_shape[0] = n
+        # input_shape = (n, self.output_shape[1] + 4, self.output_shape[2] + 4, self.kernel.shape[0]//25)
 
         a = self.last_call
         z = self(a) + 1e-9# Denominator
