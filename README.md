@@ -1,12 +1,14 @@
+This repo is a demonstration of an end-to-end deployment of a lightweight image tamper detection model. The model is trained in Tensorflow then converted into numpy as Tensorflow is not supported on 32-bit machines. It is then deployed as a Discord `/slash` command, enabling users to invoke the command by attaching an image
+<!-- 
 Quick hack for converting a trained tensorflow model to a purely numpy one. Developed for use for hosting a model on my Raspberry Pi 3 as Tensorflow isn't supported on 32-bit systems.
+
+
+# To-do list
+- Improve convolutions from nested for loops to (matrix multiplications)[https://stackoverflow.com/questions/16798888/2-d-convolution-as-a-matrix-matrix-multiplication] -->
 
 Currently supports softmax, ReLU, 2D convolution, Dense, Max pooling.
 Check out notebooks on how to run.
 Also has https://arxiv.org/abs/1604.00825
-
-# To-do list
-- Improve convolutions from nested for loops to (matrix multiplications)[https://stackoverflow.com/questions/16798888/2-d-convolution-as-a-matrix-matrix-multiplication]
-
 
 -`tf_to_np/create_model.py` converts a tf model to a numpy model
 -`tf_to_np/Layers.py` numpy versions of tf functions
