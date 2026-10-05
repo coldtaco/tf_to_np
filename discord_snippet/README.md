@@ -1,0 +1,1 @@
+Expose the converted numpy model via a Discord /slash command
