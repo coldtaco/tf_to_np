@@ -1,7 +1,7 @@
 import pickle
 import tensorflow as tf
 
-from Layers import *
+from tf_to_np.Layers import *
 
 def create_model(tf_model_path, save_path='model'):
     """
